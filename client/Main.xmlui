@@ -1,0 +1,26 @@
+<App name="XMLUI Template App">
+    <H2>Add New User</H2>
+    <Form
+        id="userForm"
+        submitUrl="api/entities/User"
+        data="{{ name: '', age: '', occupation: '' }}"
+        submitMethod="POST"
+    >
+        <FormItem label="Name" type="text" bindTo="name" />
+        <FormItem label="Age" type="number" bindTo="age" />
+        <FormItem label="Occupation" type="text" bindTo="occupation" />
+    </Form>
+
+    <H2>Users List</H2>
+    <List data="api/entities/User">
+        <property name="itemTemplate">
+            <Card>
+                <HStack verticalAlignment="center">
+                    <Text value="{$item.name}" variant="strong" />
+                    <Badge value="{$item.occupation}" />
+                    <Text value="{$item.age} years old" />
+                </HStack>
+            </Card>
+        </property>
+    </List>
+</App>

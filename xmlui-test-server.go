@@ -19,8 +19,8 @@ import (
 	"strings"
 	"sync"
 
-	_ "github.com/lib/pq"           // PostgreSQL driver
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	_ "github.com/lib/pq"  // PostgreSQL driver
+	_ "modernc.org/sqlite" // SQLite driver (pure Go, no CGO)
 )
 
 // ===== Data Structures =====
@@ -80,8 +80,8 @@ func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPat
 	} else {
 		// Default to SQLite
 		log.Println("Using SQLite database")
-		// Simple connection string with extension loading enabled
-		db, err = sql.Open("sqlite3", dbPath+"?_allow_load_extension=1")
+		// modernc.org/sqlite uses "sqlite" as the driver name
+		db, err = sql.Open("sqlite", dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to SQLite: %w", err)
 		}
@@ -91,42 +91,11 @@ func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPat
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 
-		// Create memory database for extensions
-		if _, err := db.Exec(`ATTACH DATABASE ':memory:' AS extension_mem`); err != nil {
-			log.Printf("Failed to attach memory database: %v", err)
-		}
-
-		// Enable extension loading via PRAGMA
-		if _, err := db.Exec(`PRAGMA load_extension = 1;`); err != nil {
-			log.Printf("Warning: PRAGMA load_extension failed: %v", err)
-		}
-
-		// If extension is provided, try to load it
+		// Note: modernc.org/sqlite (pure Go) doesn't support C extensions
+		// Extensions are not available with this pure Go SQLite driver
 		if extensionPath != "" {
-			var mu sync.Mutex
-			mu.Lock()
-			defer mu.Unlock()
-			// Get the absolute path to the extension file
-			absPath, err := filepath.Abs(extensionPath)
-			if err != nil {
-				log.Printf("Warning: failed to get absolute path: %v", err)
-				absPath = "./" + extensionPath
-			}
-
-			// Ensure file has execute permissions (required for Linux)
-			if err := os.Chmod(absPath, 0755); err != nil {
-				log.Printf("Warning: failed to set execute permissions on extension: %v", err)
-			}
-
-			// Log extension loading attempt
-			log.Printf("Trying to load extension: %s", absPath)
-
-			loadQuery := fmt.Sprintf("SELECT load_extension('%s')", strings.ReplaceAll(absPath, "'", "''"))
-			if _, err := db.Exec(loadQuery); err != nil {
-				log.Printf("Extension loading failed with %v", err)
-			} else {
-				log.Println("Extension loaded successfully")
-			}
+			log.Printf("Warning: Extension loading is not supported with zombiezen.com/go/sqlite")
+			log.Printf("The pure Go SQLite driver does not support C extensions")
 		}
 	}
 
