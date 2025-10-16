@@ -403,6 +403,41 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	http.Error(w, message, statusCode)
 }
 
+// Set appropriate MIME type based on file extension
+func setContentType(w http.ResponseWriter, filename string) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".js":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".gif":
+		w.Header().Set("Content-Type", "image/gif")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+	case ".woff":
+		w.Header().Set("Content-Type", "font/woff")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	case ".ttf":
+		w.Header().Set("Content-Type", "font/ttf")
+	case ".eot":
+		w.Header().Set("Content-Type", "application/vnd.ms-fontobject")
+	default:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
+}
+
 // ===== Request Handlers =====
 
 // Handle API requests based on the API description
@@ -649,6 +684,7 @@ func main() {
 	showResponses := flag.Bool("show-responses", false, "Enable logging of SQL query responses")
 	pgConnStr := flag.String("pg-conn", "", "PostgreSQL connection string (if provided, use PostgreSQL instead of SQLite)")
 	pgPort := flag.String("pg-port", "", "PostgreSQL port (optional, overrides port in --pg-conn if provided)")
+	clientDir := flag.String("client", "client", "Directory containing client files (SPA)")
 
 	// Short-form alias for show-responses
 	var shortShowResponses bool
@@ -708,24 +744,52 @@ func main() {
 	// Then handle query endpoint
 	mux.HandleFunc("/query", server.handleQuery)
 
-	// Handle root and static files
+	// Handle static files and SPA routing
+	staticDir := *clientDir
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received request for: %s", r.URL.Path)
 
-		if r.URL.Path == "/" {
-			log.Println("Trying to serve index.html")
-			http.ServeFile(w, r, "index.html")
+		// Try to serve static files from client directory
+		filePath := filepath.Join(staticDir, r.URL.Path)
+
+		// If the path is a directory, try index.html inside it
+		if strings.HasSuffix(r.URL.Path, "/") {
+			filePath = filepath.Join(filePath, "index.html")
+		}
+
+		log.Printf("Trying to serve: %s", filePath)
+
+		// Check if file exists
+		if _, err := os.Stat(filePath); err == nil {
+			// File exists, set appropriate MIME type and serve it
+			setContentType(w, filePath)
+			http.ServeFile(w, r, filePath)
 			return
 		}
 
-		filePath := "." + r.URL.Path
-		log.Printf("Trying to serve: %s", filePath)
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			log.Printf("File not found: %s", filePath)
-			http.NotFound(w, r)
+		// For SPA routing, if no static file found, serve the main index.html
+		// This allows client-side routing to work
+		if r.URL.Path != "/" {
+			log.Printf("File not found, serving index.html for Single Page Application routing: %s", r.URL.Path)
+			indexPath := filepath.Join(staticDir, "index.html")
+			if _, err := os.Stat(indexPath); err == nil {
+				setContentType(w, indexPath)
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+		}
+
+		// Fallback: serve root index.html
+		rootIndexPath := filepath.Join(staticDir, "index.html")
+		if _, err := os.Stat(rootIndexPath); err == nil {
+			setContentType(w, rootIndexPath)
+			http.ServeFile(w, r, rootIndexPath)
 			return
 		}
-		http.ServeFile(w, r, filePath)
+
+		// If no index.html found, return 404
+		log.Printf("File not found: %s", filePath)
+		http.NotFound(w, r)
 	})
 
 	// Log server settings
@@ -734,6 +798,7 @@ func main() {
 	log.Printf("- API Description: %s", *apiDesc)
 	log.Printf("- Extension: %s", *extension)
 	log.Printf("- Show Responses: %v", showResponsesEnabled)
+	log.Printf("- Client Directory: %s", *clientDir)
 	if *pgConnStr != "" {
 		log.Printf("- Database: PostgreSQL")
 	} else {
