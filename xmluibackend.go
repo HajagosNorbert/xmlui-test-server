@@ -1,10 +1,9 @@
-package main
+package xmluibackend
 
 import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -12,10 +11,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 
@@ -61,18 +58,28 @@ type Server struct {
 	mu            sync.Mutex                // Mutex to serialize DB access
 }
 
+// ServerConfig holds configuration options for creating a new Server
+type ServerConfig struct {
+	DBPath         string // Path to SQLite database file
+	PgConnStr      string // PostgreSQL connection string
+	ExtensionPath  string // Path to SQLite extension (not supported with pure Go driver)
+	APIDescPath    string // Path to API description JSON file
+	ShowResponses  bool   // Enable logging of SQL query responses
+}
+
 // ===== Server Initialization =====
 
-func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPath string, showResponses bool) (*Server, error) {
+// NewServer creates a new Server instance with the given configuration
+func NewServer(config ServerConfig) (*Server, error) {
 	var db *sql.DB
 	var err error
 	var dbType string
 
 	// Determine which database to use
-	if pgConnStr != "" {
-		// Use PostgreSQL if pgConnStr is provided
+	if config.PgConnStr != "" {
+		// Use PostgreSQL if PgConnStr is provided
 		log.Println("Using PostgreSQL database")
-		db, err = sql.Open("postgres", pgConnStr)
+		db, err = sql.Open("postgres", config.PgConnStr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 		}
@@ -81,7 +88,7 @@ func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPat
 		// Default to SQLite
 		log.Println("Using SQLite database")
 		// modernc.org/sqlite uses "sqlite" as the driver name
-		db, err = sql.Open("sqlite", dbPath)
+		db, err = sql.Open("sqlite", config.DBPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to SQLite: %w", err)
 		}
@@ -93,7 +100,7 @@ func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPat
 
 		// Note: modernc.org/sqlite (pure Go) doesn't support C extensions
 		// Extensions are not available with this pure Go SQLite driver
-		if extensionPath != "" {
+		if config.ExtensionPath != "" {
 			log.Printf("Warning: Extension loading is not supported with zombiezen.com/go/sqlite")
 			log.Printf("The pure Go SQLite driver does not support C extensions")
 		}
@@ -103,18 +110,18 @@ func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPat
 	server := &Server{
 		db:            db,
 		pathRegexps:   make(map[string]*regexp.Regexp),
-		showResponses: showResponses,
+		showResponses: config.ShowResponses,
 		dbType:        dbType,
-		apiDescPath:   apiDescPath,
+		apiDescPath:   config.APIDescPath,
 		mu:            sync.Mutex{},
 	}
 
 	// Load the API description if provided
-	if apiDescPath != "" {
-		if _, err := os.Stat(apiDescPath); os.IsNotExist(err) {
-			log.Printf("API description file not found: %s", apiDescPath)
+	if config.APIDescPath != "" {
+		if _, err := os.Stat(config.APIDescPath); os.IsNotExist(err) {
+			log.Printf("API description file not found: %s", config.APIDescPath)
 		} else {
-			apiDesc, err := loadAPIDescription(apiDescPath)
+			apiDesc, err := loadAPIDescription(config.APIDescPath)
 			if err != nil {
 				log.Printf("Warning: Failed to load API description: %v", err)
 			} else {
@@ -131,6 +138,14 @@ func NewServer(dbPath string, pgConnStr string, extensionPath string, apiDescPat
 	}
 
 	return server, nil
+}
+
+// Close closes the database connection
+func (s *Server) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
 }
 
 // ===== API Description Handling =====
@@ -291,8 +306,8 @@ func extractBodyParams(r *http.Request) (map[string]interface{}, error) {
 
 // ===== SQL Execution =====
 
-// Execute SQL query and return results as maps
-func (s *Server) executeQuery(sqlQuery string, params []interface{}) ([]map[string]interface{}, error) {
+// ExecuteQuery executes SQL query and returns results as maps
+func (s *Server) ExecuteQuery(sqlQuery string, params []interface{}) ([]map[string]interface{}, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -403,8 +418,8 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	http.Error(w, message, statusCode)
 }
 
-// Set appropriate MIME type based on file extension
-func setContentType(w http.ResponseWriter, filename string) {
+// SetContentType sets appropriate MIME type based on file extension
+func SetContentType(w http.ResponseWriter, filename string) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".html":
@@ -440,8 +455,8 @@ func setContentType(w http.ResponseWriter, filename string) {
 
 // ===== Request Handlers =====
 
-// Handle API requests based on the API description
-func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+// HandleAPI handles API requests based on the API description
+func (s *Server) HandleAPI(w http.ResponseWriter, r *http.Request) {
 	log.Printf("API: %s %s", r.Method, r.URL.Path)
 
 	if s.apiDesc == nil {
@@ -523,7 +538,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Execute the query
-	result, err := s.executeQuery(sqlQuery, sqlParams)
+	result, err := s.ExecuteQuery(sqlQuery, sqlParams)
 	if err != nil {
 		sendErrorResponse(w, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
 		return
@@ -533,8 +548,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	s.sendJSONResponse(w, result, http.StatusOK)
 }
 
-// Handle direct SQL query requests
-func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+// HandleQuery handles direct SQL query requests
+func (s *Server) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Query: %s", r.URL.Path)
 
 	if r.Method != "POST" {
@@ -561,7 +576,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Execute the query
-	result, err := s.executeQuery(req.SQL, req.Params)
+	result, err := s.ExecuteQuery(req.SQL, req.Params)
 	if err != nil {
 		sendErrorResponse(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -571,8 +586,8 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	s.sendJSONResponse(w, result, http.StatusOK)
 }
 
-// Handle proxy requests
-func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+// HandleProxy handles proxy requests
+func (s *Server) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// 1. Parse off the part after "/proxy/".
 	targetPath := strings.TrimPrefix(r.URL.Path, "/proxy/")
 	targetQuery := r.URL.RawQuery
@@ -613,140 +628,25 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func launchBrowser(url string) {
-	var cmd string
-	var args []string
+// CORSMiddleware adds CORS headers to responses
+func CORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
 
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = "open"
-		args = []string{url}
-	case "windows":
-		cmd = "rundll32"
-		args = []string{"url.dll,FileProtocolHandler", url}
-	default: // Unix-like
-		cmd = "xdg-open"
-		args = []string{url}
-	}
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
-	err := exec.Command(cmd, args...).Start()
-	if err != nil {
-		log.Printf("Failed to launch browser: %v", err)
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
-// ===== Main Application =====
-
-// injectPgPort injects or overrides the port in a Postgres connection string (URL or DSN format)
-func injectPgPort(pgConnStr, pgPort string) string {
-	if pgConnStr == "" || pgPort == "" {
-		return pgConnStr
-	}
-	if strings.HasPrefix(pgConnStr, "postgres://") || strings.HasPrefix(pgConnStr, "postgresql://") {
-		u, err := url.Parse(pgConnStr)
-		if err == nil {
-			if u.Port() == "" || u.Port() != pgPort {
-				u.Host = u.Hostname() + ":" + pgPort
-				return u.String()
-			}
-		}
-		return pgConnStr
-	}
-	// DSN format: add or replace port=...
-	re := regexp.MustCompile(`port=\\d+`)
-	if re.MatchString(pgConnStr) {
-		return re.ReplaceAllString(pgConnStr, "port="+pgPort)
-	}
-	return pgConnStr + " port=" + pgPort
-}
-
-func main() {
-	// Set custom flag usage to display double dashes for word options
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
-		flag.VisitAll(func(f *flag.Flag) {
-			prefix := "-"
-			// Use double dash for multi-character flags
-			if len(f.Name) > 1 {
-				prefix = "--"
-			}
-			fmt.Fprintf(flag.CommandLine.Output(), "  %s%s: %s\n", prefix, f.Name, f.Usage)
-		})
-	}
-
-	// Set up command line flags with long and short versions
-	var portValue string
-	flag.StringVar(&portValue, "port", "8080", "Port to run the server on")
-	flag.StringVar(&portValue, "p", "8080", "Port to run the server on (shorthand)")
-	extension := flag.String("extension", "", "Path to SQLite extension to load")
-	apiDesc := flag.String("api", "", "Path to API description file")
-	dbPath := flag.String("db", "data.db", "Path to SQLite database file")
-	showResponses := flag.Bool("show-responses", false, "Enable logging of SQL query responses")
-	pgConnStr := flag.String("pg-conn", "", "PostgreSQL connection string (if provided, use PostgreSQL instead of SQLite)")
-	pgPort := flag.String("pg-port", "", "PostgreSQL port (optional, overrides port in --pg-conn if provided)")
-	clientDir := flag.String("client", "client", "Directory containing client files (SPA)")
-
-	// Short-form alias for show-responses
-	var shortShowResponses bool
-	flag.BoolVar(&shortShowResponses, "s", false, "Enable logging of SQL query responses (shorthand)")
-
-	flag.Parse()
-
-	// Set up logging
-	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	log.Println("Server starting...")
-
-	// Print current working directory
-	pwd, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("Working directory: %s", pwd)
-
-	// Initialize server
-	showResponsesEnabled := *showResponses || shortShowResponses
-	finalPgConnStr := injectPgPort(*pgConnStr, *pgPort)
-	server, err := NewServer(*dbPath, finalPgConnStr, *extension, *apiDesc, showResponsesEnabled)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Create router
-	mux := http.NewServeMux()
-
-	corsMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "*")
-
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	// Handle API routes first (to match /api/* before static files)
-	if server.apiDesc != nil {
-		apiBasePath := server.apiDesc.BasePath
-		if !strings.HasSuffix(apiBasePath, "/") {
-			apiBasePath += "/"
-		}
-		mux.HandleFunc(apiBasePath, server.handleAPI)
-	}
-
-	// Handle proxy next
-	mux.HandleFunc("/proxy/", server.handleProxy)
-
-	// Then handle query endpoint
-	mux.HandleFunc("/query", server.handleQuery)
-
-	// Handle static files and SPA routing
-	staticDir := *clientDir
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+// CreateStaticFileHandler creates a handler for serving static files with SPA routing support
+func CreateStaticFileHandler(staticDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received request for: %s", r.URL.Path)
 
 		// Try to serve static files from client directory
@@ -762,7 +662,7 @@ func main() {
 		// Check if file exists
 		if _, err := os.Stat(filePath); err == nil {
 			// File exists, set appropriate MIME type and serve it
-			setContentType(w, filePath)
+			SetContentType(w, filePath)
 			http.ServeFile(w, r, filePath)
 			return
 		}
@@ -773,7 +673,7 @@ func main() {
 			log.Printf("File not found, serving index.html for Single Page Application routing: %s", r.URL.Path)
 			indexPath := filepath.Join(staticDir, "index.html")
 			if _, err := os.Stat(indexPath); err == nil {
-				setContentType(w, indexPath)
+				SetContentType(w, indexPath)
 				http.ServeFile(w, r, indexPath)
 				return
 			}
@@ -782,7 +682,7 @@ func main() {
 		// Fallback: serve root index.html
 		rootIndexPath := filepath.Join(staticDir, "index.html")
 		if _, err := os.Stat(rootIndexPath); err == nil {
-			setContentType(w, rootIndexPath)
+			SetContentType(w, rootIndexPath)
 			http.ServeFile(w, r, rootIndexPath)
 			return
 		}
@@ -790,25 +690,26 @@ func main() {
 		// If no index.html found, return 404
 		log.Printf("File not found: %s", filePath)
 		http.NotFound(w, r)
-	})
+	}
+}
 
-	// Log server settings
-	log.Printf("Server configuration:")
-	log.Printf("- Port: %s", portValue)
-	log.Printf("- API Description: %s", *apiDesc)
-	log.Printf("- Extension: %s", *extension)
-	log.Printf("- Show Responses: %v", showResponsesEnabled)
-	log.Printf("- Client Directory: %s", *clientDir)
-	if *pgConnStr != "" {
-		log.Printf("- Database: PostgreSQL")
-	} else {
-		os.Setenv("STEAMPIPE_CACHE", "false")
-		log.Printf("- Database: SQLite (data.db)")
+// SetupRoutes configures the HTTP routes for the server
+func (s *Server) SetupRoutes(mux *http.ServeMux, clientDir string) {
+	// Handle API routes first (to match /api/* before static files)
+	if s.apiDesc != nil {
+		apiBasePath := s.apiDesc.BasePath
+		if !strings.HasSuffix(apiBasePath, "/") {
+			apiBasePath += "/"
+		}
+		mux.HandleFunc(apiBasePath, s.HandleAPI)
 	}
 
-	// Start server
-	log.Printf("Server listening on localhost:%s...", portValue)
-	if err := http.ListenAndServe("127.0.0.1:"+portValue, corsMiddleware(mux)); err != nil {
-		log.Fatal(err)
-	}
+	// Handle proxy next
+	mux.HandleFunc("/proxy/", s.HandleProxy)
+
+	// Then handle query endpoint
+	mux.HandleFunc("/query", s.HandleQuery)
+
+	// Handle static files and SPA routing
+	mux.HandleFunc("/", CreateStaticFileHandler(clientDir))
 }

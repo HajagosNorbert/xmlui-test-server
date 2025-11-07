@@ -73,7 +73,9 @@ rm -f xmlui-test-server
 CGO_ENABLED=1
 CGO_CFLAGS="-I$SQLITE_INSTALL_DIR/include -DSQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_ALLOW_LOAD_EXTENSION"
 CGO_LDFLAGS="$SQLITE_INSTALL_DIR/lib/libsqlite3.a -lm -ldl"
-go build -tags "sqlite3_load_extension" -v
+cd cmd/xmlui-test-server
+go build -tags "sqlite3_load_extension" -v -o ../../xmlui-test-server
+cd ../..
 
 # Verify the binary was built and check its dependencies
 echo "Build complete. Checking binary dependencies:"
