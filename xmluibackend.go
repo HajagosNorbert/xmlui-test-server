@@ -20,6 +20,35 @@ import (
 	_ "modernc.org/sqlite" // SQLite driver (pure Go, no CGO)
 )
 
+// List of file extensions that should explicitly return 404 if not found,
+// instead of falling back to index.html for SPA routing.
+var servedStaticFileExtensions = map[string]bool{
+	// Images
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true, ".webp": true, ".ico": true, ".bmp": true, ".tiff": true, ".tif": true,
+	// Video
+	".mp4": true, ".webm": true, ".ogg": true, ".mov": true, ".avi": true, ".mkv": true, ".flv": true, ".wmv": true,
+	// Audio
+	".mp3": true, ".wav": true, ".aac": true, ".flac": true, ".wma": true, ".m4a": true,
+	// Documents
+	".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true, ".txt": true, ".rtf": true, ".odt": true, ".ods": true, ".odp": true,
+	// Fonts
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	// Archives
+	".zip": true, ".tar": true, ".gz": true, ".rar": true, ".7z": true, ".iso": true,
+	// Data files
+	".json": true, ".xml": true, ".csv": true, ".yaml": true, ".yml": true, ".sqlite": true, ".db": true, ".sql": true, ".tsv": true,
+	// Executables/Binaries
+	".exe": true, ".dll": true, ".bin": true, ".sh": true, ".bat": true, ".apk": true, ".dmg": true, ".deb": true, ".rpm": true,
+	// Web-related, but not typically SPA entry points
+	".map":   true, // Source maps
+	".wasm":  true, // WebAssembly
+	".js":    true,
+	".css":   true,
+	".html":  true,
+	".xmlui": true, // xmlui component
+	".xs":    true, // xmlui code-behind (with xmlui.xs extension)
+}
+
 // ===== Data Structures =====
 
 type QueryRequest struct {
@@ -60,11 +89,11 @@ type Server struct {
 
 // ServerConfig holds configuration options for creating a new Server
 type ServerConfig struct {
-	DBPath         string // Path to SQLite database file
-	PgConnStr      string // PostgreSQL connection string
-	ExtensionPath  string // Path to SQLite extension (not supported with pure Go driver)
-	APIDescPath    string // Path to API description JSON file
-	ShowResponses  bool   // Enable logging of SQL query responses
+	DBPath        string // Path to SQLite database file
+	PgConnStr     string // PostgreSQL connection string
+	ExtensionPath string // Path to SQLite extension (not supported with pure Go driver)
+	APIDescPath   string // Path to API description JSON file
+	ShowResponses bool   // Enable logging of SQL query responses
 }
 
 // ===== Server Initialization =====
@@ -440,16 +469,72 @@ func SetContentType(w http.ResponseWriter, filename string) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 	case ".ico":
 		w.Header().Set("Content-Type", "image/x-icon")
+	case ".pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+	case ".wasm":
+		w.Header().Set("Content-Type", "application/wasm")
+	case ".webmanifest":
+		w.Header().Set("Content-Type", "application/manifest+json")
+	case ".xml":
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	case ".csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	case ".tsv":
+		w.Header().Set("Content-Type", "text/tab-separated-values; charset=utf-8")
+	case ".mp4":
+		w.Header().Set("Content-Type", "video/mp4")
+	case ".webm":
+		w.Header().Set("Content-Type", "video/webm")
+	case ".ogg":
+		w.Header().Set("Content-Type", "video/ogg") // Also audio/ogg
+	case ".mov":
+		w.Header().Set("Content-Type", "video/quicktime")
+	case ".mp3":
+		w.Header().Set("Content-Type", "audio/mpeg")
+	case ".wav":
+		w.Header().Set("Content-Type", "audio/wav")
+	case ".aac":
+		w.Header().Set("Content-Type", "audio/aac")
+	case ".flac":
+		w.Header().Set("Content-Type", "audio/flac")
 	case ".woff":
 		w.Header().Set("Content-Type", "font/woff")
 	case ".woff2":
 		w.Header().Set("Content-Type", "font/woff2")
 	case ".ttf":
 		w.Header().Set("Content-Type", "font/ttf")
+	case ".otf":
+		w.Header().Set("Content-Type", "font/otf")
 	case ".eot":
 		w.Header().Set("Content-Type", "application/vnd.ms-fontobject")
-	default:
+	case ".zip":
+		w.Header().Set("Content-Type", "application/zip")
+	case ".gz":
+		w.Header().Set("Content-Type", "application/gzip")
+	case ".tar":
+		w.Header().Set("Content-Type", "application/x-tar")
+	case ".rar":
+		w.Header().Set("Content-Type", "application/vnd.rar")
+	case ".7z":
+		w.Header().Set("Content-Type", "application/x-7z-compressed")
+	case ".doc", ".dot":
+		w.Header().Set("Content-Type", "application/msword")
+	case ".docx":
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	case ".xls", ".xlt", ".xlm":
+		w.Header().Set("Content-Type", "application/vnd.ms-excel")
+	case ".xlsx":
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	case ".ppt", ".pot", ".pps", ".ppa":
+		w.Header().Set("Content-Type", "application/vnd.ms-powerpoint")
+	case ".pptx":
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+	case ".txt":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	case ".rtf":
+		w.Header().Set("Content-Type", "application/rtf")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream") // Default to binary
 	}
 }
 
@@ -649,6 +734,20 @@ func CreateStaticFileHandler(staticDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received request for: %s", r.URL.Path)
 
+		// Get the file extension of the requested URL path
+		ext := strings.ToLower(filepath.Ext(r.URL.Path))
+
+		// If the extension is in our servedStaticFileExtensions map,
+		// and the file doesn't exist, return 404 immediately.
+		if _, should404 := servedStaticFileExtensions[ext]; should404 {
+			potentialFilePath := filepath.Join(staticDir, r.URL.Path)
+			if _, err := os.Stat(potentialFilePath); os.IsNotExist(err) {
+				msg := fmt.Sprintf("File with supported extension not found, sending 404 response: %s", potentialFilePath)
+				sendErrorResponse(w, msg, http.StatusNotFound)
+				return
+			}
+		}
+
 		// Try to serve static files from client directory
 		filePath := filepath.Join(staticDir, r.URL.Path)
 
@@ -665,18 +764,6 @@ func CreateStaticFileHandler(staticDir string) http.HandlerFunc {
 			SetContentType(w, filePath)
 			http.ServeFile(w, r, filePath)
 			return
-		}
-
-		// For SPA routing, if no static file found, serve the main index.html
-		// This allows client-side routing to work
-		if r.URL.Path != "/" {
-			log.Printf("File not found, serving index.html for Single Page Application routing: %s", r.URL.Path)
-			indexPath := filepath.Join(staticDir, "index.html")
-			if _, err := os.Stat(indexPath); err == nil {
-				SetContentType(w, indexPath)
-				http.ServeFile(w, r, indexPath)
-				return
-			}
 		}
 
 		// Fallback: serve root index.html
